@@ -29,6 +29,7 @@ import Data.Maybe
 import ShellCheck.Regex (matches)
 
 import System.FilePath (normalise, splitDirectories)
+import qualified System.FilePath.Windows as Windows
 
 import Test.QuickCheck
 import Text.Regex.TDFA (CompOption(..), Regex, defaultCompOpt, defaultExecOpt, makeRegexOpts)
@@ -135,13 +136,23 @@ prop_relativePathAboveRoot = relativePath "/repo" "/../repo/a.sh" == Just "a.sh"
 -- absolute directory of the ignore file, or Nothing for a file outside it.
 -- Purely lexical, so that a symlink is matched by its own path, not its target's.
 relativePath :: FilePath -> FilePath -> Maybe FilePath
-relativePath root path =
+relativePath = relativePathBy (splitDirectories . normalise)
+
+prop_relativePathWindowsSlashes = windowsRelativePath "C:\\repo" "C:/repo/sub/a.sh" == Just "sub/a.sh"
+prop_relativePathWindowsDriveCase = windowsRelativePath "C:\\repo" "c:\\repo\\a.sh" == Just "a.sh"
+prop_relativePathWindowsDots = windowsRelativePath "C:\\repo" "C:\\repo\\sub\\..\\a.sh" == Just "a.sh"
+prop_relativePathWindowsOtherDrive = windowsRelativePath "C:\\repo" "D:\\repo\\a.sh" == Nothing
+prop_relativePathWindowsSibling = windowsRelativePath "C:\\repo" "C:\\repository\\a.sh" == Nothing
+-- Takes the platform's way of splitting a normalised path into directories,
+-- so that the Windows one can be tested anywhere. It has to normalise, since
+-- on Windows C:/repo and c:\repo are the same directory.
+relativePathBy :: (FilePath -> [FilePath]) -> FilePath -> FilePath -> Maybe FilePath
+relativePathBy split root path =
     case stripPrefix (components root) (components path) of
         Just inside@(_:_) -> Just $ intercalate "/" inside
         _ -> Nothing
   where
-    -- Normalised for Windows, where C:/repo and c:\repo are the same directory
-    components = reverse . foldl' collapse [] . splitDirectories . normalise
+    components = reverse . foldl' collapse [] . split
     collapse seen "." = seen
     collapse (_:seen@(_:_)) ".." = seen
     collapse seen ".." = seen
@@ -411,6 +422,9 @@ classRanges (lo, hi) =
         | a `elem` "[]^-" = (a, a) : isolate (succ a, b)
         | b `elem` "[]^-" = (b, b) : isolate (a, pred b)
         | otherwise = [(a, b)]
+
+windowsRelativePath :: FilePath -> FilePath -> Maybe FilePath
+windowsRelativePath = relativePathBy (Windows.splitDirectories . Windows.normalise)
 
 ignoreVerdict :: String -> FilePath -> Maybe Bool
 ignoreVerdict contents = isIgnored (parseIgnoreFile contents)
