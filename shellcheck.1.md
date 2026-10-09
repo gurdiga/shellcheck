@@ -381,9 +381,10 @@ directory of the `.shellcheckignore` itself.
     *.env
     !/example.env
 
-When several `.shellcheckignore` files apply, the one closest to the input
-file takes precedence. Unlike in Git, a `!` pattern can re-include a file
-from an ignored directory.
+All `.shellcheckignore` files from the input file's directory upwards are
+consulted. If patterns in more than one of them match, the file closest to
+the input decides. Unlike in Git, a `!` pattern can re-include a file from
+an ignored directory.
 
 Ignored files are only skipped as inputs: they are still read when a checked
 script `source`s them. Standard input is never ignored. If all input files
