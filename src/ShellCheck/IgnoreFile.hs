@@ -21,13 +21,15 @@
 {-# LANGUAGE TemplateHaskell #-}
 -- Parsing and matching of .shellcheckignore files, which use the pattern
 -- syntax of gitignore(5).
-module ShellCheck.IgnoreFile (IgnorePattern, parseIgnoreFile, isIgnored, runTests) where
+module ShellCheck.IgnoreFile (IgnorePattern, parseIgnoreFile, isIgnored, relativePath, runTests) where
 
 import Data.Char
 import Data.List
 import Data.Maybe
 
 import ShellCheck.Regex (matches)
+
+import System.FilePath (splitDirectories)
 
 import Test.QuickCheck
 import Text.Regex.TDFA (CompOption(..), Regex, defaultCompOpt, defaultExecOpt, makeRegexOpts)
@@ -76,6 +78,32 @@ isIgnored patterns path = foldl' decide Nothing patterns
     decide previous ignorePattern
         | path `matches` regex ignorePattern = Just . not $ negated ignorePattern
         | otherwise = previous
+
+prop_relativePathInside = relativePath "/repo" "/repo/sub/a.sh" == Just "sub/a.sh"
+prop_relativePathDirect = relativePath "/repo" "/repo/a.sh" == Just "a.sh"
+prop_relativePathTrailingSlash = relativePath "/repo/" "/repo/a.sh" == Just "a.sh"
+prop_relativePathDots = relativePath "/repo" "/repo/./sub/../a.sh" == Just "a.sh"
+prop_relativePathBackInside = relativePath "/repo" "/repo/../repo/a.sh" == Just "a.sh"
+prop_relativePathOutside = relativePath "/repo" "/other/a.sh" == Nothing
+prop_relativePathParent = relativePath "/repo" "/repo/../a.sh" == Nothing
+prop_relativePathSibling = relativePath "/repo" "/repository/a.sh" == Nothing
+prop_relativePathItself = relativePath "/repo" "/repo" == Nothing
+prop_relativePathFilesystemRoot = relativePath "/" "/a.sh" == Just "a.sh"
+prop_relativePathAboveRoot = relativePath "/repo" "/../repo/a.sh" == Just "a.sh"
+-- Gives the absolute path of a file as isIgnored expects it: relative to the
+-- absolute directory of the ignore file, or Nothing for a file outside it.
+-- Purely lexical, so that a symlink is matched by its own path, not its target's.
+relativePath :: FilePath -> FilePath -> Maybe FilePath
+relativePath root path =
+    case stripPrefix (components root) (components path) of
+        Just inside@(_:_) -> Just $ intercalate "/" inside
+        _ -> Nothing
+  where
+    components = reverse . foldl' collapse [] . splitDirectories
+    collapse seen "." = seen
+    collapse (_:seen@(_:_)) ".." = seen
+    collapse seen ".." = seen
+    collapse seen component = component : seen
 
 parseLine :: String -> Maybe IgnorePattern
 parseLine line =

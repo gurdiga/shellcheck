@@ -270,58 +270,28 @@ process flags files = do
             Right contents ->
                 return (parseFileListLines contents)
 
--- Removes the files matched by a .shellcheckignore in their directory
--- or in any parent of it.
+-- Removes the files matched by the .shellcheckignore in the current directory.
 dropIgnored :: [FilePath] -> IO [FilePath]
 dropIgnored files = do
-    cache <- newIORef Map.empty
-    filterM (fmap not . ignored cache) files
+    root <- getCurrentDirectory
+    patterns <- readIgnoreFile (root </> ".shellcheckignore")
+    return $ filter (not . ignored root patterns) files
   where
-    ignored _ "-" = return False
-    ignored cache file = do
-        -- Resolve the directory but keep the leaf name, so that patterns
-        -- match a symlink's own name rather than its target's.
-        dir <- canonicalizePath (takeDirectory file) `catch` unresolved
-        ignoreFiles <- ignoreFilesFor cache dir
-        let path = dir </> takeFileName file
-        return . fromMaybe False . listToMaybe $ mapMaybe (verdict path) ignoreFiles
-      where
-        unresolved :: IOException -> IO FilePath
-        unresolved _ = return $ takeDirectory file
+    ignored _ _ "-" = False
+    ignored root patterns file =
+        maybe False ((== Just True) . isIgnored patterns) $
+            relativePath root (root </> file)
 
-    verdict path (base, patterns) =
-        isIgnored patterns . map slash $ makeRelative base path
-    slash c = if isPathSeparator c then '/' else c
-
-    -- Nearest first, so that a .shellcheckignore overrides those above it.
-    ignoreFilesFor cache dir = do
-        known <- Map.lookup dir <$> readIORef cache
-        case known of
-            Just found -> return found
-            Nothing -> do
-                own <- readIgnoreFile dir
-                let parent = takeDirectory dir
-                inherited <- if parent == dir
-                             then return []
-                             else ignoreFilesFor cache parent
-                let found = maybeToList own ++ inherited
-                modifyIORef cache $ Map.insert dir found
-                return found
-
-    readIgnoreFile dir = do
-        let file = dir </> ".shellcheckignore"
+    readIgnoreFile file = do
         exists <- doesFileExist file
         if exists
-          then (do
-            (contents, _) <- inputFile file
-            return $ Just (dir, parseIgnoreFile contents)
-            ) `catch` unreadable
-          else return Nothing
+          then (parseIgnoreFile . fst <$> inputFile file) `catch` unreadable
+          else return []
       where
-        unreadable :: IOException -> IO (Maybe (FilePath, [IgnorePattern]))
+        unreadable :: IOException -> IO [IgnorePattern]
         unreadable err = do
             hPutStrLn stderr $ show err
-            return Nothing
+            return []
 
 
 runFormatter :: SystemInterface IO -> Formatter -> Options -> [FilePath]

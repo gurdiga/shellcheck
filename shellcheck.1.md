@@ -364,12 +364,16 @@ both applied, with `.shellcheckrc` taking precedence in case of conflicts.
 # IGNORE FILES
 
 Unless `--norc` is used, ShellCheck will look for a file `.shellcheckignore`
-in the directory of each input file and in each parent directory. Input files
-matching its patterns are skipped, whether they were given on the command
-line or via `--files-from`.
+in the current directory. Input files matching its patterns are skipped,
+whether they were given on the command line or via `--files-from`.
+
+Only the current directory is searched, not the directories of the input
+files or their parents, so ShellCheck should be run from the project root
+for the file to take effect.
 
 The syntax is that of `.gitignore`: one pattern per line, relative to the
-directory of the `.shellcheckignore` itself.
+directory of the `.shellcheckignore` itself. Files outside that directory
+are never ignored.
 
     # Skip everything under any directory named 'vendor'
     vendor/
@@ -381,10 +385,7 @@ directory of the `.shellcheckignore` itself.
     *.env
     !/example.env
 
-All `.shellcheckignore` files from the input file's directory upwards are
-consulted. If patterns in more than one of them match, the file closest to
-the input decides. Unlike in Git, a `!` pattern can re-include a file from
-an ignored directory.
+Unlike in Git, a `!` pattern can re-include a file from an ignored directory.
 
 Ignored files are only skipped as inputs: they are still read when a checked
 script `source`s them. Standard input is never ignored. If all input files
