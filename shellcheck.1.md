@@ -76,7 +76,8 @@ not warn at all, as `ksh` supports decimals in arithmetic contexts.
 
 **--norc**
 
-:   Don't try to look for .shellcheckrc configuration files.
+:   Don't try to look for .shellcheckrc, .editorconfig or .shellcheckignore
+    files.
 
 **--rcfile** *RCFILE*
 
@@ -358,6 +359,35 @@ directories, ShellCheck will look in the global default
 
 Directives from `.shellcheckrc`/`shellcheckrc` and from `.editorconfig` are
 both applied, with `.shellcheckrc` taking precedence in case of conflicts.
+
+
+# IGNORE FILES
+
+Unless `--norc` is used, ShellCheck will look for a file `.shellcheckignore`
+in the directory of each input file and in each parent directory. Input files
+matching its patterns are skipped, whether they were given on the command
+line or via `--files-from`.
+
+The syntax is that of `.gitignore`: one pattern per line, relative to the
+directory of the `.shellcheckignore` itself.
+
+    # Skip everything under any directory named 'vendor'
+    vendor/
+
+    # Skip generated completion scripts in this directory only
+    /completions/*.bash
+
+    # Skip all .env files at any depth, except this one
+    *.env
+    !/example.env
+
+When several `.shellcheckignore` files apply, the one closest to the input
+file takes precedence. Unlike in Git, a `!` pattern can re-include a file
+from an ignored directory.
+
+Ignored files are only skipped as inputs: they are still read when a checked
+script `source`s them. Standard input is never ignored. If all input files
+are ignored, ShellCheck exits with 0.
 
 
 # ENVIRONMENT VARIABLES

@@ -95,6 +95,7 @@ library
       ShellCheck.Formatter.JSON1
       ShellCheck.Formatter.TTY
       ShellCheck.Formatter.Quiet
+      ShellCheck.IgnoreFile
       ShellCheck.Interface
       ShellCheck.Parser
       ShellCheck.Prelude

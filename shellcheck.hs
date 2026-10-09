@@ -21,6 +21,7 @@ import qualified ShellCheck.Analyzer
 import           ShellCheck.Checker
 import           ShellCheck.Data
 import           ShellCheck.EditorConfig
+import           ShellCheck.IgnoreFile
 import           ShellCheck.Interface
 import           ShellCheck.Regex
 
@@ -111,7 +112,7 @@ options = [
     Option "" ["list-optional"]
         (NoArg $ Flag "list-optional" "true") "List checks disabled by default",
     Option "" ["norc"]
-        (NoArg $ Flag "norc" "true") "Don't look for .shellcheckrc and .editorconfig files",
+        (NoArg $ Flag "norc" "true") "Don't look for .shellcheckrc, .editorconfig and .shellcheckignore files",
     Option "" ["rcfile"]
         (ReqArg (Flag "rcfile") "RCFILE")
         "Prefer the specified configuration file over searching for one",
@@ -228,11 +229,16 @@ process flags files = do
 
     let filesFrom = getOptions flags "files-from"
     extra <- fmap concat $ mapM readFilesFrom filesFrom
-    let allFiles = extra ++ files
+    let requestedFiles = extra ++ files
 
     -- It shouldn't be an error to do --files-from=/dev/null
     when (null filesFrom) $
-        verifyFiles allFiles
+        verifyFiles requestedFiles
+
+    -- Filtered after verifyFiles, since ignoring every file is not a usage error
+    allFiles <- if csIgnoreRC (checkSpec options)
+                then return requestedFiles
+                else lift $ dropIgnored requestedFiles
 
     let format = fromMaybe "tty" $ getOption flags "format"
     let formatters = formats $ formatterOptions options
@@ -244,7 +250,8 @@ process flags files = do
             throwError SupportFailure
         Just f -> ExceptT $ fmap Right f
 
-    sys <- lift $ ioInterface options allFiles
+    -- Ignored files remain valid 'source' targets for the files being checked
+    sys <- lift $ ioInterface options requestedFiles
 
     lift $ runFormatter sys formatter options allFiles
 
@@ -263,6 +270,58 @@ process flags files = do
             Right contents ->
                 return (parseFileListLines contents)
 
+-- Removes the files matched by a .shellcheckignore in their directory
+-- or in any parent of it.
+dropIgnored :: [FilePath] -> IO [FilePath]
+dropIgnored files = do
+    cache <- newIORef Map.empty
+    filterM (fmap not . ignored cache) files
+  where
+    ignored _ "-" = return False
+    ignored cache file = do
+        -- Resolve the directory but keep the leaf name, so that patterns
+        -- match a symlink's own name rather than its target's.
+        dir <- canonicalizePath (takeDirectory file) `catch` unresolved
+        ignoreFiles <- ignoreFilesFor cache dir
+        let path = dir </> takeFileName file
+        return . fromMaybe False . listToMaybe $ mapMaybe (verdict path) ignoreFiles
+      where
+        unresolved :: IOException -> IO FilePath
+        unresolved _ = return $ takeDirectory file
+
+    verdict path (base, patterns) =
+        isIgnored patterns . map slash $ makeRelative base path
+    slash c = if isPathSeparator c then '/' else c
+
+    -- Nearest first, so that a .shellcheckignore overrides those above it.
+    ignoreFilesFor cache dir = do
+        known <- Map.lookup dir <$> readIORef cache
+        case known of
+            Just found -> return found
+            Nothing -> do
+                own <- readIgnoreFile dir
+                let parent = takeDirectory dir
+                inherited <- if parent == dir
+                             then return []
+                             else ignoreFilesFor cache parent
+                let found = maybeToList own ++ inherited
+                modifyIORef cache $ Map.insert dir found
+                return found
+
+    readIgnoreFile dir = do
+        let file = dir </> ".shellcheckignore"
+        exists <- doesFileExist file
+        if exists
+          then (do
+            (contents, _) <- inputFile file
+            return $ Just (dir, parseIgnoreFile contents)
+            ) `catch` unreadable
+          else return Nothing
+      where
+        unreadable :: IOException -> IO (Maybe (FilePath, [IgnorePattern]))
+        unreadable err = do
+            hPutStrLn stderr $ show err
+            return Nothing
 
 
 runFormatter :: SystemInterface IO -> Formatter -> Options -> [FilePath]
