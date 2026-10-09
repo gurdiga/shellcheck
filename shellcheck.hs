@@ -306,8 +306,9 @@ type IgnoreRules = (FilePath, [IgnorePattern])
 
 readIgnoreRules :: FilePath -> IO (Either IOException IgnoreRules)
 readIgnoreRules file = try $ do
-    -- Physical, like the current directory that input files are resolved
-    -- against, or the two would disagree behind a symlink.
+    -- Symlinks are resolved because getCurrentDirectory resolves them too,
+    -- and relative inputs are located from there. Paths are then compared as
+    -- written, so an absolute input spelled through a symlink falls outside.
     root <- canonicalizePath (takeDirectory file)
     (contents, _) <- inputFile file
     return (root, parseIgnoreFile contents)
