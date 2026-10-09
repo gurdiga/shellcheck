@@ -23,7 +23,6 @@
 -- syntax of gitignore(5).
 module ShellCheck.IgnoreFile (IgnorePattern, parseIgnoreFile, isIgnored, relativePath, runTests) where
 
-import Data.Char
 import Data.List
 import Data.Maybe
 
@@ -39,7 +38,7 @@ data IgnorePattern = IgnorePattern {
     regex :: Regex
 }
 
-prop_parseBlankLines = null $ parseIgnoreFile "\n\n   \n\t\n"
+prop_parseBlankLines = null $ parseIgnoreFile "\n\n   \n"
 prop_parseComments = null $ parseIgnoreFile "# foo\n#bar\n"
 prop_parseCountsPatterns = length (parseIgnoreFile "a\n\n#c\n!b\n") == 2
 prop_parseEmptyPatterns = null $ parseIgnoreFile "!\n/\n!/\n"
@@ -51,7 +50,10 @@ prop_parseCrlfEscapedSpace = ignoreVerdict "foo\\ \r\n" "foo " == Just True
 prop_parseEscapedHash = ignoreVerdict "\\#foo\n" "#foo" == Just True
 prop_parseEscapedBang1 = ignoreVerdict "\\!foo\n" "!foo" == Just True
 prop_parseEscapedBang2 = ignoreVerdict "\\!foo\n" "foo" == Nothing
-prop_parseTrailingSpace = ignoreVerdict "foo.sh  \t\n" "foo.sh" == Just True
+prop_parseTrailingSpace = ignoreVerdict "foo.sh  \n" "foo.sh" == Just True
+prop_parseTrailingTab1 = ignoreVerdict "foo\t\n" "foo\t" == Just True
+prop_parseTrailingTab2 = ignoreVerdict "foo\t\n" "foo" == Nothing
+prop_parseCrlfTrailingBackslash = ignoreVerdict "a\\\r\n" "a\\" == Just True
 prop_parseEscapedTrailingSpace1 = ignoreVerdict "foo\\ \n" "foo " == Just True
 prop_parseEscapedTrailingSpace2 = ignoreVerdict "foo\\ \n" "foo" == Nothing
 prop_parseEscapedThenPlainSpace = ignoreVerdict "foo\\  \n" "foo " == Just True
@@ -107,15 +109,18 @@ relativePath root path =
 
 parseLine :: String -> Maybe IgnorePattern
 parseLine line =
-    case stripTrailingSpace line of
+    case stripTrailingSpaces withoutCr of
         '#':_ -> Nothing
         '!':rest -> IgnorePattern True <$> patternRegex rest
         rest -> IgnorePattern False <$> patternRegex rest
+  where
+    withoutCr = if "\r" `isSuffixOf` line then init line else line
 
-stripTrailingSpace :: String -> String
-stripTrailingSpace ('\\':c:rest) = '\\' : c : stripTrailingSpace rest
-stripTrailingSpace s | all isSpace s = ""
-stripTrailingSpace (c:rest) = c : stripTrailingSpace rest
+-- Only spaces, as in git: any other trailing whitespace is part of the pattern.
+stripTrailingSpaces :: String -> String
+stripTrailingSpaces ('\\':c:rest) = '\\' : c : stripTrailingSpaces rest
+stripTrailingSpaces s | all (== ' ') s = ""
+stripTrailingSpaces (c:rest) = c : stripTrailingSpaces rest
 
 prop_anyDepth1 = ignoreVerdict "foo.sh\n" "a/b/foo.sh" == Just True
 prop_anyDepth2 = ignoreVerdict "*.sh\n" "a/b/c.sh" == Just True
@@ -163,11 +168,19 @@ prop_newlineInNameDir = ignoreVerdict "vendor\n" "vendor/a\nb.sh" == Just True
 compile :: String -> Regex
 compile = makeRegexOpts defaultCompOpt { multiline = False } defaultExecOpt
 
--- An escaped '/' stays inside its segment, like any other escaped character.
+prop_splitClassSlash1 = ignoreVerdict "/a[!/]b\n" "acb" == Just True
+prop_splitClassSlash2 = ignoreVerdict "/a[!/]b\n" "a/b" == Nothing
+prop_splitClassSlash3 = ignoreVerdict "/a[x/]b\n" "axb" == Just True
+prop_splitClassSlash4 = ignoreVerdict "/a[x/]b\n" "a/b" == Nothing
+prop_splitUnterminatedClass = ignoreVerdict "a[b/c\n" "a[b/c" == Just True
+-- A '/' that is escaped or inside a class stays in its segment.
 splitSegments :: String -> [String]
 splitSegments = go ""
   where
     go acc ('\\':c:rest) = go (c:'\\':acc) rest
+    go acc ('[':rest) | Just (_, afterClass) <- classRegex rest =
+        let inClass = take (length rest - length afterClass) rest
+        in go (reverse inClass ++ '[' : acc) afterClass
     go acc ('/':rest) = reverse acc : go "" rest
     go acc (c:rest) = go (c:acc) rest
     go acc [] = [reverse acc]
@@ -274,6 +287,14 @@ prop_classDotIsLiteral = ignoreVerdict "a[.]c\n" "abc" == Nothing
 prop_classPosix1 = ignoreVerdict "a[[:digit:]]c\n" "a1c" == Just True
 prop_classPosix2 = ignoreVerdict "a[[:digit:]]c\n" "abc" == Nothing
 prop_classPosixNegated = ignoreVerdict "a[![:digit:]]c\n" "abc" == Just True
+prop_classPunct1 = ignoreVerdict "a[[:punct:]]b\n" "a-b" == Just True
+prop_classPunct2 = ignoreVerdict "/a[[:punct:]]b\n" "a/b" == Nothing
+prop_classPunctBracket = ignoreVerdict "a[[:punct:]]b\n" "a]b" == Just True
+prop_classPunctLetter = ignoreVerdict "a[[:punct:]]b\n" "axb" == Nothing
+prop_classGraph1 = ignoreVerdict "a[[:graph:]]b\n" "axb" == Just True
+prop_classGraph2 = ignoreVerdict "/a[[:graph:]]b\n" "a/b" == Nothing
+prop_classPrint1 = ignoreVerdict "a[[:print:]]b\n" "a b" == Just True
+prop_classPrint2 = ignoreVerdict "/a[[:print:]]b\n" "a/b" == Nothing
 prop_classReversedRange = ignoreVerdict "a[z-a]c\n" "a[z-a]c" == Just True
 -- Takes the pattern following a '[' and returns the regex for the class
 -- along with the rest of the pattern. Nothing means the '[' is literal: the
@@ -311,7 +332,7 @@ classRegex afterBracket = do
         case s of
             ']':rest | not isFirst -> Just ([], rest)
             '[':':':cs | (name, ':':']':rest) <- break (== ':') cs, name `elem` posixClasses ->
-                item (Left name) rest
+                items (maybe [Left name] (map Right) $ lookup name classesWithSlash) rest
             _ -> do
                 (lo, afterLo) <- classChar s
                 case afterLo of
@@ -319,13 +340,21 @@ classRegex afterBracket = do
                         item (Right (lo, hi)) rest
                     _ -> item (Right (lo, lo)) afterLo
 
-    item x rest = do
-        (xs, rest') <- classItems False rest
-        return (x:xs, rest')
+    item x = items [x]
+    items xs rest = do
+        (ys, rest') <- classItems False rest
+        return (xs ++ ys, rest')
 
     classChar ('\\':c:rest) = Just (c, rest)
     classChar (c:rest) = Just (c, rest)
     classChar [] = Nothing
+
+    -- Spelled out as ranges, so that classRanges takes the '/' out of them.
+    classesWithSlash = [
+        ("punct", [('!', '/'), (':', '@'), ('[', '`'), ('{', '~')]),
+        ("graph", [('!', '~')]),
+        ("print", [(' ', '~')])
+        ]
 
     posixClasses = ["alnum", "alpha", "blank", "cntrl", "digit", "graph", "lower", "print", "punct", "space", "upper", "xdigit"]
 
