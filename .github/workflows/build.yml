@@ -153,7 +153,7 @@ jobs:
           path: deploy/
 
   deploy:
-    if: github.event_name == 'push'
+    if: github.event_name == 'push' && github.repository == 'koalaman/shellcheck'
     name: Deploy binaries
     needs: package_binary
     runs-on: ubuntu-latest
