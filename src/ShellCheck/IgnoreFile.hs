@@ -58,8 +58,13 @@ prop_parseEscapedTrailingSpace1 = ignoreVerdict "foo\\ \n" "foo " == Just True
 prop_parseEscapedTrailingSpace2 = ignoreVerdict "foo\\ \n" "foo" == Nothing
 prop_parseEscapedThenPlainSpace = ignoreVerdict "foo\\  \n" "foo " == Just True
 prop_parseLeadingSpace = ignoreVerdict " foo\n" "foo" == Nothing
+prop_parseBom = ignoreVerdict "\xFEFFvendor/\n" "vendor/a.sh" == Just True
+prop_parseBomOnlyAtStart = ignoreVerdict "a\n\xFEFFzz\n" "zz" == Nothing
 parseIgnoreFile :: String -> [IgnorePattern]
-parseIgnoreFile = mapMaybe parseLine . lines
+parseIgnoreFile = mapMaybe parseLine . lines . withoutBom
+  where
+    withoutBom ('\xFEFF':contents) = contents
+    withoutBom contents = contents
 
 prop_isIgnoredEmpty = ignoreVerdict "" "foo.sh" == Nothing
 prop_isIgnoredNoMatch = ignoreVerdict "foo.sh\n" "bar.sh" == Nothing
