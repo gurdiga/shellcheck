@@ -6,7 +6,7 @@ shellcheck - Shell script analysis tool
 
 # SYNOPSIS
 
-**shellcheck** [*OPTIONS*...] [--files-from=FILE] *FILES*...
+**shellcheck** [*OPTIONS*...] [--files-from=FILE] [--exclude-from=FILE] *FILES*...
 
 # DESCRIPTION
 
@@ -77,7 +77,7 @@ not warn at all, as `ksh` supports decimals in arithmetic contexts.
 **--norc**
 
 :   Don't try to look for .shellcheckrc, .editorconfig or .shellcheckignore
-    files.
+    files. An ignore file given with **--exclude-from** is still used.
 
 **--rcfile** *RCFILE*
 
@@ -139,6 +139,14 @@ not warn at all, as `ksh` supports decimals in arithmetic contexts.
     file path. Lines starting with `#` or empty lines are ignored. Use `-` to
     read the list from standard input. This option is processed in addition to
     any files specified on the command line.
+
+**--exclude-from** *FILE*
+
+:   Skip input files matching the patterns in *FILE*, instead of looking for
+    a `.shellcheckignore` in the current directory. The patterns are relative
+    to the directory of *FILE*. Use `/dev/null` to not skip any files. If
+    specified more than once, the last one is used. See **IGNORE FILES**
+    below for more information.
 
 
 # FORMATS
@@ -368,8 +376,9 @@ in the current directory. Input files matching its patterns are skipped,
 whether they were given on the command line or via `--files-from`.
 
 Only the current directory is searched, not the directories of the input
-files or their parents, so ShellCheck should be run from the project root
-for the file to take effect.
+files or their parents. When running ShellCheck from elsewhere than the
+project root, such as from an editor, use `--exclude-from` to specify the
+file.
 
 The syntax is that of `.gitignore`: one pattern per line, relative to the
 directory of the `.shellcheckignore` itself. Files outside that directory

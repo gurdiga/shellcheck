@@ -27,6 +27,7 @@ main() {
   test_nested_ignore_files
   test_symlinks
   test_options
+  test_exclude_from
   test_source
 
   if (( failures > 0 ))
@@ -105,6 +106,26 @@ test_options() {
   check_in "$root/everything" "stdin is never ignored" "-" - < "$root/checked.sh"
   check_in "$root/everything" "files next to stdin are still filtered" \
     "-" - checked.sh < "$root/checked.sh"
+}
+
+test_exclude_from() {
+  check_in "$root/sub" "--exclude-from names the ignore file" \
+    "" --exclude-from=../.shellcheckignore ../ignored.sh ignored.sh vendor/lib.sh
+  check_in "$root/sub" "--exclude-from patterns are relative to that file" \
+    "anchored.sh" --exclude-from="$root/.shellcheckignore" anchored.sh ../anchored.sh
+  check_in / "--exclude-from from an unrelated directory" \
+    "$root/checked.sh" --exclude-from="$root/.shellcheckignore" \
+    "$root/ignored.sh" "$root/checked.sh"
+  check "--exclude-from replaces the default ignore file" \
+    "ignored.sh" --exclude-from=nested/.shellcheckignore ignored.sh nested/local.sh
+  check "--exclude-from=/dev/null ignores nothing" \
+    "ignored.sh" --exclude-from=/dev/null ignored.sh
+  check "--exclude-from is not disabled by --norc" \
+    "checked.sh" --norc --exclude-from=.shellcheckignore ignored.sh checked.sh
+  check "last --exclude-from is used" \
+    "ignored.sh" --exclude-from=.shellcheckignore --exclude-from=/dev/null ignored.sh
+  check_refused "unreadable --exclude-from is fatal" \
+    --exclude-from=nonexistent checked.sh
 }
 
 test_source() {
@@ -208,6 +229,30 @@ check_in() {
       echo "  in $dir: shellcheck -f gcc $*"
       echo "  expected files: ${expected:-(none)}, exit $expected_status"
       echo "  actual files:   ${actual:-(none)}, exit $status"
+      printf '%s\n' "$output" | sed 's/^/    /'
+    } >&2
+  fi
+}
+
+# check_refused description shellcheck-args...
+# Verifies that shellcheck fails over the ignore file, without checking anything.
+check_refused() {
+  local description="$1"
+  shift
+
+  local output status=0
+  output=$(cd "$root" && "$sc" -f gcc "$@" 2>&1) || status=$?
+
+  if [[ "$status" == 2 && "$output" == "Could not read ignore file: "* ]]
+  then
+    echo "ok: $description"
+  else
+    failures=$((failures + 1))
+    {
+      echo "FAIL: $description"
+      echo "  in $root: shellcheck -f gcc $*"
+      echo "  expected a complaint about the ignore file, exit 2"
+      echo "  actual exit $status"
       printf '%s\n' "$output" | sed 's/^/    /'
     } >&2
   fi

@@ -139,7 +139,10 @@ options = [
         (NoArg $ Flag "help" "true") "Show this usage summary and exit",
     Option "" ["files-from"]
         (ReqArg (Flag "files-from") "FILE")
-        "Read input files from FILE (one per line, or '-' for stdin)"
+        "Read input files from FILE (one per line, or '-' for stdin)",
+    Option "" ["exclude-from"]
+        (ReqArg (Flag "exclude-from") "FILE")
+        "Skip input files matching the patterns in FILE instead of .shellcheckignore"
     ]
 getUsageInfo = usageInfo usageHeader options
 
@@ -236,9 +239,10 @@ process flags files = do
         verifyFiles requestedFiles
 
     -- Filtered after verifyFiles, since ignoring every file is not a usage error
-    allFiles <- if csIgnoreRC (checkSpec options)
-                then return requestedFiles
-                else lift $ dropIgnored requestedFiles
+    ignoreFile <- case getOptions flags "exclude-from" of
+        [] -> lift $ defaultIgnoreFile options
+        given -> return . Just $ last given
+    allFiles <- maybe (return requestedFiles) (`dropIgnored` requestedFiles) ignoreFile
 
     let format = fromMaybe "tty" $ getOption flags "format"
     let formatters = formats $ formatterOptions options
@@ -270,28 +274,33 @@ process flags files = do
             Right contents ->
                 return (parseFileListLines contents)
 
--- Removes the files matched by the .shellcheckignore in the current directory.
-dropIgnored :: [FilePath] -> IO [FilePath]
-dropIgnored files = do
-    root <- getCurrentDirectory
-    patterns <- readIgnoreFile (root </> ".shellcheckignore")
-    return $ filter (not . ignored root patterns) files
+-- Not consulted for an explicit --exclude-from, which --norc doesn't disable.
+defaultIgnoreFile :: Options -> IO (Maybe FilePath)
+defaultIgnoreFile options = do
+    exists <- doesFileExist file
+    return $ if exists && not (csIgnoreRC (checkSpec options))
+             then Just file
+             else Nothing
+  where
+    file = ".shellcheckignore"
+
+-- Removes the files matched by the patterns of the ignore file, which are
+-- relative to its directory.
+dropIgnored :: FilePath -> [FilePath] -> ExceptT Status IO [FilePath]
+dropIgnored ignoreFile files = do
+    cwd <- liftIO getCurrentDirectory
+    result <- liftIO (try (inputFile ignoreFile) :: IO (Either IOException (String, Bool)))
+    case result of
+        Left e -> do
+            printErr $ "Could not read ignore file: " ++ ignoreFile ++ ": " ++ show e
+            throwError RuntimeException
+        Right (contents, _) ->
+            return $ filter (not . ignored cwd (parseIgnoreFile contents)) files
   where
     ignored _ _ "-" = False
-    ignored root patterns file =
+    ignored cwd patterns file =
         maybe False ((== Just True) . isIgnored patterns) $
-            relativePath root (root </> file)
-
-    readIgnoreFile file = do
-        exists <- doesFileExist file
-        if exists
-          then (parseIgnoreFile . fst <$> inputFile file) `catch` unreadable
-          else return []
-      where
-        unreadable :: IOException -> IO [IgnorePattern]
-        unreadable err = do
-            hPutStrLn stderr $ show err
-            return []
+            relativePath (takeDirectory (cwd </> ignoreFile)) (cwd </> file)
 
 
 runFormatter :: SystemInterface IO -> Formatter -> Options -> [FilePath]
@@ -479,6 +488,9 @@ parseOption flag options =
 
         -- This flag is handled specially in 'process'
         Flag "files-from" _ -> return options
+
+        -- This flag is handled specially in 'process'
+        Flag "exclude-from" _ -> return options
 
         Flag str _ -> do
             printErr $ "Internal error for --" ++ str ++ ". Please file a bug :("
