@@ -399,9 +399,12 @@ Unlike in Git, a `!` pattern can re-include a file or directory from an
 ignored directory, provided it comes after the pattern ignoring that
 directory.
 
-Ignored files are only skipped as inputs: they are still read when a checked
-script `source`s them. Standard input is never ignored. If all input files
-are ignored, ShellCheck exits with 0.
+Ignoring a file does not affect the scripts that `source` it: it is still
+followed as if it had been given as input. With `--check-sourced`, its
+warnings are therefore still reported.
+
+Standard input is never ignored. If all input files are ignored, ShellCheck
+exits with 0.
 
 
 # ENVIRONMENT VARIABLES
