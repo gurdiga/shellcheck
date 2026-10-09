@@ -28,13 +28,15 @@ import Data.Maybe
 
 import ShellCheck.Regex (matches)
 
-import System.FilePath (splitDirectories)
+import System.FilePath (normalise, splitDirectories)
 
 import Test.QuickCheck
 import Text.Regex.TDFA (CompOption(..), Regex, defaultCompOpt, defaultExecOpt, makeRegexOpts)
 
 data IgnorePattern = IgnorePattern {
     negated :: Bool,
+    dirOnly :: Bool,
+    -- Matches the paths the pattern names, but not what is inside them
     regex :: Regex
 }
 
@@ -77,14 +79,46 @@ prop_isIgnoredNegationOnly = ignoreVerdict "!keep.sh\n" "keep.sh" == Just False
 prop_isIgnoredLastWins = ignoreVerdict "*.sh\n!keep.sh\nkeep.sh\n" "keep.sh" == Just True
 prop_isIgnoredReincludeInDir1 = ignoreVerdict "vendor/\n!vendor/keep.sh\n" "vendor/keep.sh" == Just False
 prop_isIgnoredReincludeInDir2 = ignoreVerdict "vendor/\n!vendor/keep.sh\n" "vendor/drop.sh" == Just True
--- Unlike git, a '!' pattern can re-include a file whose parent directory was
--- excluded: directories are never traversed, only file paths are seen.
+prop_isIgnoredReincludeOrder = ignoreVerdict "!vendor/keep.sh\nvendor/\n" "vendor/keep.sh" == Just True
+prop_isIgnoredReincludeDir1 = ignoreVerdict "vendor/\n!vendor/mine/\n" "vendor/mine/a.sh" == Just False
+prop_isIgnoredReincludeDir2 = ignoreVerdict "vendor/\n!vendor/mine/\n" "vendor/other/a.sh" == Just True
+prop_isIgnoredDirNegationKeepsFileMatch1 = ignoreVerdict "*.gen.sh\n!sub/\n" "sub/x.gen.sh" == Just True
+prop_isIgnoredDirNegationKeepsFileMatch2 = ignoreVerdict "*.gen.sh\n/a/\n!/a/b/\n" "a/b/x.gen.sh" == Just True
+prop_isIgnoredWhitelist1 = ignoreVerdict "*\n!*/\n!*.sh\n" "d/a.txt" == Just True
+prop_isIgnoredWhitelist2 = ignoreVerdict "*\n!*/\n!*.sh\n" "d/a.sh" == Just False
+prop_isIgnoredWhitelist3 = ignoreVerdict "*\n!*/\n!*.sh\n" "a.txt" == Just True
+prop_isIgnoredWhitelistAnchored1 = ignoreVerdict "/w/**\n!/w/**/\n!/w/**/*.sh\n" "w/d/a.txt" == Just True
+prop_isIgnoredWhitelistAnchored2 = ignoreVerdict "/w/**\n!/w/**/\n!/w/**/*.sh\n" "w/d/a.sh" == Just False
+-- The parent directories are decided first, outermost first, and the file
+-- last, each by the last pattern matching it. As in git, a '!' pattern
+-- matching a directory therefore doesn't re-include the files in it that are
+-- ignored by name. Unlike in git, a '!' pattern does re-include what is in an
+-- ignored directory, if it comes after the pattern ignoring that directory.
 isIgnored :: [IgnorePattern] -> FilePath -> Maybe Bool
-isIgnored patterns path = foldl' decide Nothing patterns
+isIgnored patterns path
+    | any isJust decisions = Just . isJust $ foldl' apply Nothing (catMaybes decisions)
+    | otherwise = Nothing
   where
-    decide previous ignorePattern
-        | path `matches` regex ignorePattern = Just . not $ negated ignorePattern
-        | otherwise = previous
+    decisions = map decision $ levels (splitOn '/' path)
+    levels names = [(intercalate "/" (take n names), n < length names) | n <- [1 .. length names]]
+
+    decision (level, isDirectory) = listToMaybe [
+        (index, negated ignorePattern)
+        | (index, ignorePattern) <- reverse (zip [0 :: Int ..] patterns)
+        , isDirectory || not (dirOnly ignorePattern)
+        , level `matches` regex ignorePattern
+        ]
+
+    -- The state is the index of the pattern that the path is ignored by
+    apply ignoredBy (index, False) = Just $ maybe index (max index) ignoredBy
+    apply (Just ignoring) (index, True) | index > ignoring = Nothing
+    apply ignoredBy _ = ignoredBy
+
+splitOn :: Char -> String -> [String]
+splitOn separator s =
+    case break (== separator) s of
+        (first, _:rest) -> first : splitOn separator rest
+        (first, []) -> [first]
 
 prop_relativePathInside = relativePath "/repo" "/repo/sub/a.sh" == Just "sub/a.sh"
 prop_relativePathDirect = relativePath "/repo" "/repo/a.sh" == Just "a.sh"
@@ -106,7 +140,8 @@ relativePath root path =
         Just inside@(_:_) -> Just $ intercalate "/" inside
         _ -> Nothing
   where
-    components = reverse . foldl' collapse [] . splitDirectories
+    -- Normalised for Windows, where C:/repo and c:\repo are the same directory
+    components = reverse . foldl' collapse [] . splitDirectories . normalise
     collapse seen "." = seen
     collapse (_:seen@(_:_)) ".." = seen
     collapse seen ".." = seen
@@ -116,8 +151,8 @@ parseLine :: String -> Maybe IgnorePattern
 parseLine line =
     case stripTrailingSpaces withoutCr of
         '#':_ -> Nothing
-        '!':rest -> IgnorePattern True <$> patternRegex rest
-        rest -> IgnorePattern False <$> patternRegex rest
+        '!':rest -> uncurry (IgnorePattern True) <$> patternRegex rest
+        rest -> uncurry (IgnorePattern False) <$> patternRegex rest
   where
     withoutCr = if "\r" `isSuffixOf` line then init line else line
 
@@ -151,18 +186,18 @@ prop_dirPrefixWholeName = ignoreVerdict "vendor\n" "vendored/a.sh" == Nothing
 prop_dirPrefixAnchored1 = ignoreVerdict "/vendor\n" "vendor/a.sh" == Just True
 prop_dirPrefixAnchored2 = ignoreVerdict "/vendor\n" "x/vendor/a.sh" == Nothing
 prop_dirPrefixGlob = ignoreVerdict "*.d\n" "conf.d/a.sh" == Just True
-patternRegex :: String -> Maybe Regex
+-- Gives whether the pattern is only for directories, and its regex.
+patternRegex :: String -> Maybe (Bool, Regex)
 patternRegex pattern
     | null body = Nothing
-    | otherwise = Just . compile $
-        "^" ++ depthPrefix ++ segmentsRegex (splitSegments body) ++ treeSuffix ++ "$"
+    | otherwise = Just (forDirectories, compile $
+        "^" ++ depthPrefix ++ segmentsRegex (splitSegments body) ++ "$")
   where
-    dirOnly = "/" `isSuffixOf` pattern
-    trimmed = if dirOnly then init pattern else pattern
+    forDirectories = "/" `isSuffixOf` pattern
+    trimmed = if forDirectories then init pattern else pattern
     anchored = '/' `elem` trimmed
     body = fromMaybe trimmed $ stripPrefix "/" trimmed
     depthPrefix = if anchored then "" else "(.*/)?"
-    treeSuffix = if dirOnly then "/.*" else "(/.*)?"
 
 prop_newlineInNameAnchor = ignoreVerdict "/foo\n" "x\nfoo" == Nothing
 prop_newlineInNameWildcard = ignoreVerdict "*.sh\n" "a\nb.sh" == Just True

@@ -144,9 +144,9 @@ not warn at all, as `ksh` supports decimals in arithmetic contexts.
 
 :   Skip input files matching the patterns in *FILE*, instead of looking for
     a `.shellcheckignore` in the current directory. The patterns are relative
-    to the directory of *FILE*. Use `/dev/null` to not skip any files. If
-    specified more than once, the last one is used. See **IGNORE FILES**
-    below for more information.
+    to the directory of *FILE*, which can't be `-` for standard input. Use
+    `/dev/null` to not skip any files. If specified more than once, the last
+    one is used. See **IGNORE FILES** below for more information.
 
 
 # FORMATS
@@ -382,7 +382,8 @@ file.
 
 The syntax is that of `.gitignore`: one pattern per line, relative to the
 directory of the `.shellcheckignore` itself. Files outside that directory
-are never ignored.
+are never ignored. Patterns are always case sensitive, including on file
+systems that aren't.
 
     # Skip everything under any directory named 'vendor'
     vendor/
@@ -394,7 +395,9 @@ are never ignored.
     *.env
     !/example.env
 
-Unlike in Git, a `!` pattern can re-include a file from an ignored directory.
+Unlike in Git, a `!` pattern can re-include a file or directory from an
+ignored directory, provided it comes after the pattern ignoring that
+directory.
 
 Ignored files are only skipped as inputs: they are still read when a checked
 script `source`s them. Standard input is never ignored. If all input files

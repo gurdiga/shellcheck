@@ -78,6 +78,7 @@ test_symlinks() {
     "link-to-ignored.sh" link-to-ignored.sh
   check "link with an ignored name is skipped" "" link.gen.sh
   check_in "$root/dangling" "dangling ignore file is not fatal" "checked.sh" checked.sh
+  check_in "$root/unreadable" "unreadable ignore file is not fatal" "checked.sh" checked.sh
 
   # Paths are compared as written, without resolving links
   check "linked directory is matched by its own name" "" linked/vendor/lib.sh
@@ -124,8 +125,12 @@ test_exclude_from() {
     "checked.sh" --norc --exclude-from=.shellcheckignore ignored.sh checked.sh
   check "last --exclude-from is used" \
     "ignored.sh" --exclude-from=.shellcheckignore --exclude-from=/dev/null ignored.sh
+  check "--exclude-from spelled through a link" \
+    "checked.sh" --exclude-from="$tmp/root-link/.shellcheckignore" ignored.sh checked.sh
   check_refused "unreadable --exclude-from is fatal" \
-    --exclude-from=nonexistent checked.sh
+    2 "Could not read ignore file: " --exclude-from=nonexistent checked.sh
+  check_refused "--exclude-from can't be stdin" \
+    3 "--exclude-from can't read from standard input" --exclude-from=- checked.sh
 }
 
 test_source() {
@@ -138,7 +143,7 @@ test_source() {
 }
 
 create_fixtures() {
-  mkdir -p "$root"/{sub/vendor,vendor,nested,everything,source,dangling} \
+  mkdir -p "$root"/{sub/vendor,vendor,nested,everything,source,dangling,unreadable} \
     "$tmp"/outside/vendor || die "Can't create fixtures"
 
   cat > "$root/.shellcheckignore" << 'EOF'
@@ -159,13 +164,16 @@ EOF
   printf '%s\n' '-' '*' > "$root/everything/.shellcheckignore"
   echo 'lib.sh' > "$root/source/.shellcheckignore"
   ln -s nonexistent "$root/dangling/.shellcheckignore"
+  # Empty, in case it's readable after all, as it is for root
+  : > "$root/unreadable/.shellcheckignore"
+  chmod 000 "$root/unreadable/.shellcheckignore"
 
   local file
   for file in \
     checked.sh ignored.sh anchored.sh local.sh keep.gen.sh other.gen.sh \
     vendor/lib.sh sub/ignored.sh sub/anchored.sh sub/local.sh sub/vendor/lib.sh \
     nested/ignored.sh nested/local.sh nested/other.gen.sh \
-    everything/checked.sh dangling/checked.sh
+    everything/checked.sh dangling/checked.sh unreadable/checked.sh
   do
     flawed_script > "$root/$file"
   done
@@ -234,16 +242,17 @@ check_in() {
   fi
 }
 
-# check_refused description shellcheck-args...
-# Verifies that shellcheck fails over the ignore file, without checking anything.
+# check_refused description status message shellcheck-args...
+# Verifies that shellcheck fails with that status and a complaint starting
+# with message, without checking anything.
 check_refused() {
-  local description="$1"
-  shift
+  local description="$1" expected_status="$2" message="$3"
+  shift 3
 
   local output status=0
   output=$(cd "$root" && "$sc" -f gcc "$@" 2>&1) || status=$?
 
-  if [[ "$status" == 2 && "$output" == "Could not read ignore file: "* ]]
+  if [[ "$status" == "$expected_status" && "$output" == "$message"* ]]
   then
     echo "ok: $description"
   else
@@ -251,7 +260,7 @@ check_refused() {
     {
       echo "FAIL: $description"
       echo "  in $root: shellcheck -f gcc $*"
-      echo "  expected a complaint about the ignore file, exit 2"
+      echo "  expected \"$message...\", exit $expected_status"
       echo "  actual exit $status"
       printf '%s\n' "$output" | sed 's/^/    /'
     } >&2
