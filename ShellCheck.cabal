@@ -36,6 +36,7 @@ Extra-Source-Files:
     striptests
     -- tests
     test/shellcheck.hs
+    test/ignoretest
 
 source-repository head
     type: git
