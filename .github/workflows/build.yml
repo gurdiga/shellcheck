@@ -90,7 +90,7 @@ jobs:
     needs: package_source
     strategy:
       matrix:
-        build: [darwin.x86_64, darwin.aarch64]
+        build: [darwin.aarch64]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
